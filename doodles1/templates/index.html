@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Doodles Chatbot - Ollama Powered</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <H1 class=" flex-container">
+    </H1>
+    <div class="chat-container">
+        <h1>🤖 Meet Doodles (Ollama Powered)</h1>
+        
+        <!-- Status indicator -->
+        <div class="status-bar" id="status-bar">
+            <span id="status-text">Checking status...</span>
+            <button onclick="checkStatus()" id="refresh-btn">🔄</button>
+        </div>
+        
+        <!-- Model selection -->
+        <div class="model-selector">
+            <label for="model-select">Model:</label>
+            <select id="model-select">
+                <option value="llama2">Llama 2</option>
+                <option value="mistral">Mistral</option>
+                <option value="codellama">Code Llama</option>
+                <option value="gemma:7b">Gemma 7B</option>
+            </select>
+           
+        </div>
+        
+        <div class="chat-box" id="chat-box"></div>
+        
+        <div class="input-container">
+            <input type="text" id="user-input" placeholder="Say something..." onkeypress="handleKey(event)">
+            <button onclick="sendMessage()" id="send-btn">Send</button>
+        </div>
+        
+        <!-- Loading indicator -->
+        <div class="loading" id="loading" style="display: none;">
+            <span>🤖 Doodles is thinking...</span>
+        </div>
+    </div>
+
+    <script>
+        let streamingEnabled = false;
+        let isProcessing = false;
+
+        // Check system status on page load
+        window.onload = function() {
+            checkStatus();
+        };
+
+        function handleKey(event) {
+            if (event.key === 'Enter' && !isProcessing) {
+                sendMessage();
+            }
+        }
+
+        function toggleStreaming() {
+            streamingEnabled = !streamingEnabled;
+            const btn = document.getElementById('stream-btn');
+            btn.textContent = `Stream: ${streamingEnabled ? 'ON' : 'OFF'}`;
+            btn.style.background = streamingEnabled ? '#4caf50' : '#7e57c2';
+        }
+
+        function checkStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    const statusBar = document.getElementById('status-bar');
+                    const statusText = document.getElementById('status-text');
+                    
+                    if (data.ollama_running) {
+                        statusText.textContent = `✅ Ollama running (${data.available_models.length} models)`;
+                        statusBar.className = 'status-bar online';
+                        
+                        // Update model selector with available models
+                        updateModelSelector(data.available_models);
+                    } else {
+                        statusText.textContent = '❌ Ollama not running';
+                        statusBar.className = 'status-bar offline';
+                    }
+                })
+                .catch(err => {
+                    document.getElementById('status-text').textContent = '⚠️ Status check failed';
+                    document.getElementById('status-bar').className = 'status-bar offline';
+                });
+        }
+
+        function updateModelSelector(availableModels) {
+            const select = document.getElementById('model-select');
+            const currentValue = select.value;
+            
+            // Clear current options
+            select.innerHTML = '';
+            
+            // Add available models
+            availableModels.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = model;
+                select.appendChild(option);
+            });
+            
+            // Restore selection if still available
+            if (availableModels.includes(currentValue)) {
+                select.value = currentValue;
+            }
+        }
+
+        function sendMessage() {
+            if (isProcessing) return;
+            
+            const input = document.getElementById('user-input');
+            const message = input.value.trim();
+            if (!message) return;
+
+            const chatBox = document.getElementById('chat-box');
+            const selectedModel = document.getElementById('model-select').value;
+            
+            // Add user message
+            chatBox.innerHTML += `<div class="message user"><strong>You:</strong> ${message}</div>`;
+            input.value = '';
+            chatBox.scrollTop = chatBox.scrollHeight;
+            
+            isProcessing = true;
+            document.getElementById('send-btn').disabled = true;
+            document.getElementById('loading').style.display = 'block';
+
+            if (streamingEnabled) {
+                sendStreamingMessage(message, selectedModel);
+            } else {
+                sendRegularMessage(message, selectedModel);
+            }
+        }
+
+        function sendRegularMessage(message, model) {
+            fetch('/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message, model: model })
+            })
+            .then(response => response.json())
+            .then(data => {
+                const chatBox = document.getElementById('chat-box');
+                chatBox.innerHTML += `<div class="message bot"><strong>Doodles (${data.model_used}):</strong> ${data.reply}</div>`;
+                chatBox.scrollTop = chatBox.scrollHeight;
+            })
+            .catch(err => {
+                const chatBox = document.getElementById('chat-box');
+                chatBox.innerHTML += `<div class="message bot error">❌ Error: ${err.message}</div>`;
+                chatBox.scrollTop = chatBox.scrollHeight;
+            })
+            .finally(() => {
+                isProcessing = false;
+                document.getElementById('send-btn').disabled = false;
+                document.getElementById('loading').style.display = 'none';
+            });
+        }
+
+        function sendStreamingMessage(message, model) {
+            const chatBox = document.getElementById('chat-box');
+            
+            // Create streaming message container
+            const streamContainer = document.createElement('div');
+            streamContainer.className = 'message bot streaming';
+            streamContainer.innerHTML = `<strong>Doodles (${model}):</strong> <span class="stream-content"></span>`;
+            chatBox.appendChild(streamContainer);
+            
+            const streamContent = streamContainer.querySelector('.stream-content');
+            let fullResponse = '';
+
+            const eventSource = new EventSource('/chat-stream');
+            
+            // Send the message data
+            fetch('/chat-stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message, model: model })
+            });
+
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.chunk) {
+                        fullResponse += data.chunk;
+                        streamContent.textContent = fullResponse;
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                    }
+                    
+                    if (data.done || data.error) {
+                        eventSource.close();
+                        streamContainer.classList.remove('streaming');
+                        
+                        if (data.error) {
+                            streamContent.textContent = `❌ Error: ${data.error}`;
+                            streamContainer.classList.add('error');
+                        }
+                        
+                        isProcessing = false;
+                        document.getElementById('send-btn').disabled = false;
+                        document.getElementById('loading').style.display = 'none';
+                    }
+                } catch (e) {
+                    console.error('Parse error:', e);
+                }
+            };
+
+            eventSource.onerror = function(event) {
+                eventSource.close();
+                streamContent.textContent = '❌ Streaming connection error';
+                streamContainer.classList.add('error');
+                streamContainer.classList.remove('streaming');
+                
+                isProcessing = false;
+                document.getElementById('send-btn').disabled = false;
+                document.getElementById('loading').style.display = 'none';
+            };
+        }
+
+        // Auto-refresh status every 30 seconds
+        setInterval(checkStatus, 30000);
+    </script>
+</body>
+</html>
